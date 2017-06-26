@@ -1708,6 +1708,8 @@ static int libxl_device_pci_compare(libxl_device_pci *d1,
     return COMPARE_PCI(d1, d2);
 }
 
+#define libxl__device_pci_update_devid NULL
+
 DEFINE_DEVICE_TYPE_STRUCT_X(pcidev, pci);
 
 /*
