@@ -851,6 +851,307 @@ out:
     return rc;
 }
 
+static int parse_vsnd_params(libxl_vsnd_params *params, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("sample-rates", token, oparg)) {
+        int i;
+        libxl_string_list rates = NULL;
+
+        split_string_into_string_list(oparg, ";", &rates);
+
+        params->num_sample_rates = libxl_string_list_length(&rates);
+        params->sample_rates = calloc(params->num_sample_rates,
+                                      sizeof(*params->sample_rates));
+
+        for (i = 0; i < params->num_sample_rates; i++) {
+            params->sample_rates[i] = strtoul(rates[i], NULL, 0);
+        }
+
+        libxl_string_list_dispose(&rates);
+    } else if (MATCH_OPTION("sample-formats", token, oparg)) {
+        int i;
+        libxl_string_list formats = NULL;
+
+        split_string_into_string_list(oparg, ";", &formats);
+
+        params->num_sample_formats = libxl_string_list_length(&formats);
+        params->sample_formats = calloc(params->num_sample_formats,
+                                        sizeof(*params->sample_formats));
+
+        for (i = 0; i < params->num_sample_formats; i++) {
+            libxl_vsnd_pcm_format format;
+
+            if (libxl_vsnd_pcm_format_from_string(formats[i], &format)) {
+                fprintf(stderr, "Invalid pcm format: %s\n", formats[i]);
+                exit(EXIT_FAILURE);
+            }
+
+            params->sample_formats[i] = format;
+        }
+
+        libxl_string_list_dispose(&formats);
+    } else if (MATCH_OPTION("channels-min", token, oparg)) {
+        params->channels_min = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("channels-max", token, oparg)) {
+        params->channels_max = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("buffer-size", token, oparg)) {
+        params->buffer_size = strtoul(oparg, NULL, 0);
+    } else {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void parse_vsnd_stream_config(const XLU_Config *config,
+                                     XLU_ConfigValue *stream_value,
+                                     libxl_vsnd_pcm *pcm)
+{
+    int ret;
+
+    XLU_ConfigList *stream_list;
+
+    if ((ret = xlu_cfg_value_get_list(config, stream_value,  &stream_list, 0))) {
+        fprintf(stderr, "Failed to get vsnd stream list: %s\n", strerror(ret));
+        exit(EXIT_FAILURE);
+    }
+
+    const char *stream_item;
+    int item = 0;
+
+    while ((stream_item = xlu_cfg_get_listitem(stream_list, item++)) != NULL) {
+        libxl_vsnd_stream *stream;
+
+        stream = ARRAY_EXTEND_INIT_NODEVID(pcm->streams, pcm->num_vsnd_streams,
+                                        libxl_vsnd_stream_init);
+
+        char *buf = strdup(stream_item);
+        char *token = strtok(buf, ",");
+
+        while(token) {
+            while (*token == ' ') token++;
+
+            if (parse_vsnd_params(&stream->params, token)) {
+                char *oparg;
+
+                if (MATCH_OPTION("id", token, oparg)) {
+                    stream->id = strtoul(oparg, NULL, 0);
+                } else if (MATCH_OPTION("type", token, oparg)) {
+
+                    if (libxl_vsnd_stream_type_from_string(oparg, &stream->type)) {
+                        fprintf(stderr, "Invalid stream type: %s\n", oparg);
+                        free(buf);
+                        exit(EXIT_FAILURE);
+                    }
+                } else {
+                    fprintf(stderr, "Invalid parameter: %s\n", token);
+                    free(buf);
+                    exit(EXIT_FAILURE);
+                }
+            }
+            token = strtok (NULL, ",");
+        }
+        free(buf);
+    }
+}
+
+static void parse_vsnd_pcm_config(const XLU_Config *config,
+                                  XLU_ConfigValue *pcm_value,
+                                  libxl_device_vsnd *vsnd)
+{
+    int ret;
+
+    XLU_ConfigList *pcm_list;
+
+    if ((ret = xlu_cfg_value_get_list(config, pcm_value,  &pcm_list, 0))) {
+        fprintf(stderr, "Failed to get vsnd pcm list: %s\n", strerror(ret));
+        exit(EXIT_FAILURE);
+    }
+
+    libxl_vsnd_pcm *pcm;
+
+    pcm = ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                    libxl_vsnd_pcm_init);
+
+    XLU_ConfigValue *pcm_item;
+    int item = 0;
+
+    while ((pcm_item = xlu_cfg_get_listitem2(pcm_list, item++)) != NULL) {
+        if (xlu_cfg_value_type(pcm_item) == XLU_STRING) {
+            char *str;
+
+            if ((ret = xlu_cfg_value_get_string(config, pcm_item, &str, 0))) {
+                fprintf(stderr, "Failed to get vsnd pcm item: %s\n", strerror(ret));
+                exit(EXIT_FAILURE);
+            }
+
+            char *buf = strdup(str);
+            char *token = strtok(buf, ",");
+
+            while(token) {
+                while (*token == ' ') token++;
+
+                if (parse_vsnd_params(&pcm->params, token)) {
+                    char *oparg;
+
+                    if (MATCH_OPTION("name", token, oparg)) {
+                        pcm->name = strdup(oparg);
+                    } else {
+                        fprintf(stderr, "Invalid parameter: %s\n", token);
+                        free(buf);
+                        exit(EXIT_FAILURE);
+                    }
+                }
+                token = strtok (NULL, ",");
+            }
+            free(buf);
+        } else {
+            parse_vsnd_stream_config(config, pcm_item, pcm);
+        }
+    }
+}
+
+static void parse_vsnd_card_config(const XLU_Config *config,
+                                   XLU_ConfigValue *card_value,
+                                   libxl_domain_config *d_config)
+{
+    int ret;
+
+    XLU_ConfigList *card_list;
+
+    // get car
+    if ((ret = xlu_cfg_value_get_list(config, card_value,  &card_list, 0))) {
+        fprintf(stderr, "Failed to get vsnd card list: %s\n", strerror(ret));
+        exit(EXIT_FAILURE);
+    }
+
+    libxl_device_vsnd *vsnd;
+
+    vsnd = ARRAY_EXTEND_INIT(d_config->vsnds,
+                             d_config->num_vsnds,
+                             libxl_device_vsnd_init);
+
+    XLU_ConfigValue *card_item;
+    int item = 0;
+
+    while ((card_item = xlu_cfg_get_listitem2(card_list, item++)) != NULL) {
+        if (xlu_cfg_value_type(card_item) == XLU_STRING) {
+            char *str;
+
+            if ((ret = xlu_cfg_value_get_string(config, card_item, &str, 0))) {
+                fprintf(stderr, "Failed to get vsnd card item: %s\n", strerror(ret));
+                exit(EXIT_FAILURE);
+            }
+
+            char *buf = strdup(str);
+            char *token = strtok(buf, ",");
+
+            while(token) {
+                while (*token == ' ') token++;
+
+                if (parse_vsnd_params(&vsnd->params, token)) {
+                    char *oparg;
+
+                    if (MATCH_OPTION("backend", token, oparg)) {
+                        vsnd->backend_domname = strdup(oparg);
+                    } else if (MATCH_OPTION("short-name", token, oparg)) {
+                        vsnd->short_name = strdup(oparg);
+                    } else if (MATCH_OPTION("long-name", token, oparg)) {
+                        vsnd->long_name = strdup(oparg);
+                    } else {
+                        fprintf(stderr, "Invalid parameter: %s\n", token);
+                        free(buf);
+                        exit(EXIT_FAILURE);
+                    }
+                }
+                token = strtok (NULL, ",");
+            }
+            free(buf);
+        } else {
+            parse_vsnd_pcm_config(config, card_item, vsnd);
+        }
+    }
+}
+
+static void parse_vsnd_config(const XLU_Config *config,
+                              libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vsnds;
+
+    if (!xlu_cfg_get_list(config, "vsnd", &vsnds, 0, 0)) {
+        XLU_ConfigValue *card_value;
+
+        d_config->num_vsnds = 0;
+        d_config->vsnds = NULL;
+
+        while ((card_value = xlu_cfg_get_listitem2(vsnds, d_config->num_vsnds)) != NULL) {
+            parse_vsnd_card_config(config, card_value, d_config);
+        }
+    }
+}
+
+static void print_params(char *prepend, libxl_vsnd_params *params)
+{
+    printf("%sparams:\n", prepend);
+
+    printf("%s\trates (%d):", prepend, params->num_sample_rates);
+
+    for (int i = 0; i < params->num_sample_rates; i++) {
+        printf(" %d", params->sample_rates[i]);
+    }
+    printf("\n");
+
+    printf("%s\tformats (%d):", prepend, params->num_sample_formats);
+
+    for (int i = 0; i < params->num_sample_formats; i++) {
+        printf(" %s", libxl_vsnd_pcm_format_to_string(params->sample_formats[i]));
+    }
+    printf("\n");
+
+    printf("%s\tchannels-min: %u\n", prepend, params->channels_min);
+    printf("%s\tchannels-max: %u\n", prepend, params->channels_max);
+    printf("%s\tbuffer-size:  %u\n", prepend, params->buffer_size);
+}
+
+static void print_streams(libxl_vsnd_stream* streams, int num_streams)
+{
+    printf("SND >>> \t\tstreams (%d):\n", num_streams);
+
+    for (int i = 0; i < num_streams; i++) {
+        printf("SND >>> \t\t\tid: %u\n", streams[i].id);
+        printf("SND >>> \t\t\ttype: %s\n", libxl_vsnd_stream_type_to_string(streams[i].type));
+        print_params("SND >>> \t\t\t", &streams[i].params);
+    }
+}
+
+static void print_pcms(libxl_vsnd_pcm* pcms, int num_pcms)
+{
+    printf("SND >>> \tPCM's (%d):\n", num_pcms);
+
+    for (int i = 0; i < num_pcms; i++) {
+        printf("SND >>> \t\tname: %s\n", pcms[i].name);
+        print_params("SND >>> \t\t", &pcms[i].params);
+        print_streams(pcms[i].streams, pcms[i].num_vsnd_streams);
+    }
+}
+
+static void print_vsnd_config(libxl_domain_config *d_config)
+{
+    printf("SND >>> Num cards: %d\n", d_config->num_vsnds);
+
+    for (int i = 0; i < d_config->num_vsnds; i++) {
+        printf("SND >>> Card: %d\n", i);
+        printf("SND >>> \tbackend: %s\n", d_config->vsnds[i].backend_domname);
+        printf("SND >>> \tdevid: %d\n", d_config->vsnds[i].devid);
+        printf("SND >>> \tshort-name: %s\n", d_config->vsnds[i].short_name);
+        printf("SND >>> \tlong-name: %s\n", d_config->vsnds[i].long_name);
+        print_params("SND >>> \t", &d_config->vsnds[i].params);
+        print_pcms(d_config->vsnds[i].pcms, d_config->vsnds[i].num_vsnd_pcms);
+    }
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -1563,6 +1864,11 @@ void parse_config_data(const char *config_source,
             }
         }
     }
+
+    parse_vsnd_config(config, d_config);
+
+    print_vsnd_config(d_config);
+//    exit(0);
 
     if (!xlu_cfg_get_list (config, "channel", &channels, 0, 0)) {
         d_config->num_channels = 0;
