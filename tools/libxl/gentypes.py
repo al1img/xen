@@ -465,6 +465,9 @@ def libxl_C_type_parse_json(ty, w, v, indent = "    ", parent = None, discrimina
     elif isinstance(ty, idl.Enumeration):
         if discriminator is not None:
             raise Exception("Only KeyedUnion can have discriminator")
+        lv = "x"
+        if parent:
+            lv = w;
         s += "{\n"
         s += "    const char *enum_str;\n"
         s += "    if (!libxl__json_object_is_string(%s)) {\n" % w
