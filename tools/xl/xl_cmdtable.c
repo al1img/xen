@@ -15,6 +15,9 @@
 #include <string.h>
 
 #include <libxl.h>
+
+#include <xen/io/kbdif.h>
+
 #include "xl.h"
 
 struct cmd_spec cmd_table[] = {
@@ -379,6 +382,21 @@ struct cmd_spec cmd_table[] = {
       &main_vtpmdetach, 0, 1,
       "Destroy a domain's virtual TPM device",
       "<Domain> <DevId|uuid>",
+    },
+    { "vkb-attach",
+      &main_vkbattach, 1, 1,
+      "Create a new virtual keyboard device",
+      "<Domain> [backend-type=<BackendType>] [backend=<BackDomain>] ["XENKBD_FIELD_UNIQUE_ID"=<UniqueId>]",
+    },
+    { "vkb-list",
+      &main_vkblist, 0, 0,
+      "List virtual keyboard devices for a domain",
+      "<Domain(s)>",
+    },
+    { "vkb-detach",
+      &main_vkbdetach, 0, 1,
+      "Destroy a domain's virtual keyboard device",
+      "<Domain> <DevId>",
     },
     { "vdispl-attach",
       &main_vdisplattach, 1, 1,
