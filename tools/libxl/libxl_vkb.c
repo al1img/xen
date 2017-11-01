@@ -17,6 +17,10 @@
 static int libxl__device_vkb_setdefault(libxl__gc *gc, uint32_t domid,
                                         libxl_device_vkb *vkb, bool hotplug)
 {
+    if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
+        vkb->backend_type = LIBXL_VKB_BACKEND_QEMU;
+    }
+
     return libxl__resolve_domid(gc, vkb->backend_domname, &vkb->backend_domid);
 }
 
@@ -30,6 +34,30 @@ static int libxl__device_from_vkb(libxl__gc *gc, uint32_t domid,
     device->devid = vkb->devid;
     device->domid = domid;
     device->kind = LIBXL__DEVICE_KIND_VKBD;
+
+    return 0;
+}
+
+static int libxl__device_vkb_dm_needed(libxl_device_vkb *vkb, uint32_t domid)
+{
+   if (vkb->backend_type == LIBXL_VKB_BACKEND_QEMU) {
+        return 1;
+   }
+
+    return 0;
+}
+
+static int libxl__set_xenstore_vkb(libxl__gc *gc, uint32_t domid,
+                                   libxl_device_vkb *vkb,
+                                   flexarray_t *back, flexarray_t *front,
+                                   flexarray_t *ro_front)
+{
+    if (vkb->id) {
+        flexarray_append_pair(front, "id", vkb->id);
+    }
+
+    flexarray_append_pair(back, "backend-type",
+                          (char *)libxl_vkb_backend_to_string(vkb->backend_type));
 
     return 0;
 }
@@ -60,7 +88,10 @@ static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkbd")
 LIBXL_DEFINE_DEVICE_REMOVE(vkb)
 
 DEFINE_DEVICE_TYPE_STRUCT_X(vkb, vkb, vkbd
-    .skip_attach = 1
+    .skip_attach = 1,
+    .dm_needed   = (device_dm_needed_fn_t)libxl__device_vkb_dm_needed,
+    .set_xenstore_config   = (device_set_xenstore_config_fn_t)
+                             libxl__set_xenstore_vkb
 );
 
 /*
